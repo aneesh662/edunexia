@@ -1,0 +1,13 @@
+{% extends "base.html" %}{% block title %}Assign courses — Edunexia{% endblock %}{% block content %}
+<div class="mb-4"><p class="eyebrow mb-1">ADMIN ONLY</p><h1 class="fw-bold">Assign courses to students</h1><p class="text-secondary">Students can access only the courses assigned to their accounts.</p></div>
+<div class="row g-4"><div class="col-lg-4"><div class="panel p-4"><h2 class="h5 fw-bold mb-3">New assignment</h2>
+{% if not students or not courses %}<div class="alert alert-warning">Create at least one active student and one course before assigning.</div>{% endif %}
+<form method="post"><input type="hidden" name="action" value="assign">
+<div class="mb-3"><label class="form-label">Student</label><select class="form-select" name="student_id" required>{% for s in students %}<option value="{{ s.id }}">{{ s.name }} ({{ s.username }})</option>{% endfor %}</select></div>
+<div class="mb-3"><label class="form-label">Course</label><select class="form-select" name="course_id" required>{% for c in courses %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}</select></div>
+<button class="btn btn-primary w-100" {% if not students or not courses %}disabled{% endif %}>Assign course</button></form></div></div>
+<div class="col-lg-8"><div class="panel"><div class="p-4 border-bottom"><h2 class="h5 fw-bold mb-0">Current assignments ({{ assignments|length }})</h2></div>
+<div class="table-responsive"><table class="table mb-0"><thead><tr><th>Student</th><th>Course</th><th>Action</th></tr></thead><tbody>
+{% for a in assignments %}<tr><td><strong>{{ a.student_name }}</strong><div class="small text-secondary">{{ a.username }}</div></td><td>{{ a.course_title }}</td><td><form method="post" onsubmit="return confirm('Remove this course assignment?')"><input type="hidden" name="student_id" value="{{ a.student_id }}"><input type="hidden" name="course_id" value="{{ a.course_id }}"><input type="hidden" name="action" value="remove"><button class="btn btn-sm btn-outline-danger">Remove</button></form></td></tr>
+{% else %}<tr><td colspan="3" class="text-secondary p-4">No assignments yet.</td></tr>{% endfor %}
+</tbody></table></div></div></div></div>{% endblock %}

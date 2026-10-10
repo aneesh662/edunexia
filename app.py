@@ -63,7 +63,7 @@ def init_db():
         admin = con.execute("SELECT id FROM users WHERE username='admin'").fetchone()
         if not admin:
             con.execute("INSERT INTO users(name,username,password_hash,role) VALUES(?,?,?,?)",
-                        ("Platform Admin", "admin", generate_password_hash("ChangeMe123!"), "admin"))
+                        ("Platform Admin", "admin", generate_password_hash(os.environ.get("INITIAL_ADMIN_PASSWORD", "ChangeMe123!")), "admin"))
 
 def login_required(fn):
     @wraps(fn)
@@ -169,11 +169,7 @@ def dashboard():
           LEFT JOIN users u ON u.id=c.instructor_id
           WHERE en.student_id=? ORDER BY c.id DESC""",
           (session["user_id"],session["user_id"],session["user_id"])).fetchall()
-        available = con.execute("""SELECT c.*,u.name instructor_name,
-          (SELECT COUNT(*) FROM lessons l WHERE l.course_id=c.id) lesson_count
-          FROM courses c WHERE c.id NOT IN (SELECT course_id FROM enrollments WHERE student_id=?)
-          ORDER BY c.id DESC""", (session["user_id"],)).fetchall()
-        return render_template("student_dashboard.html", courses=courses, available=available)
+        return render_template("student_dashboard.html", courses=courses)
 
 @app.route("/admin/users", methods=["GET","POST"])
 @roles_required("admin")
@@ -325,14 +321,33 @@ def delete_course(course_id):
     flash("Course deleted.", "success")
     return redirect(url_for("dashboard"))
 
-@app.route("/enroll/<int:course_id>", methods=["POST"])
-@roles_required("student")
-def enroll(course_id):
+
+@app.route("/admin/assignments", methods=["GET", "POST"])
+@roles_required("admin")
+def manage_assignments():
+    if request.method == "POST":
+        student_id = request.form.get("student_id", type=int)
+        course_id = request.form.get("course_id", type=int)
+        action = request.form.get("action", "assign")
+        with db() as con:
+            student = con.execute("SELECT id FROM users WHERE id=? AND role='student' AND active=1", (student_id,)).fetchone()
+            course = con.execute("SELECT id FROM courses WHERE id=?", (course_id,)).fetchone()
+            if not student or not course:
+                flash("Choose a valid active student and course.", "danger")
+            elif action == "remove":
+                con.execute("DELETE FROM enrollments WHERE student_id=? AND course_id=?", (student_id, course_id))
+                flash("Course assignment removed.", "success")
+            else:
+                con.execute("INSERT OR IGNORE INTO enrollments(student_id,course_id) VALUES(?,?)", (student_id, course_id))
+                flash("Course assigned to student.", "success")
+        return redirect(url_for("manage_assignments"))
     with db() as con:
-        if not con.execute("SELECT id FROM courses WHERE id=?",(course_id,)).fetchone(): abort(404)
-        con.execute("INSERT OR IGNORE INTO enrollments(student_id,course_id) VALUES(?,?)",(session["user_id"],course_id))
-    flash("You are enrolled in the course.", "success")
-    return redirect(url_for("dashboard"))
+        students = con.execute("SELECT id,name,username FROM users WHERE role='student' AND active=1 ORDER BY name").fetchall()
+        courses = con.execute("SELECT id,title FROM courses ORDER BY title").fetchall()
+        assignments = con.execute("""SELECT en.student_id,en.course_id,u.name student_name,u.username,
+          c.title course_title FROM enrollments en JOIN users u ON u.id=en.student_id
+          JOIN courses c ON c.id=en.course_id ORDER BY u.name,c.title""").fetchall()
+    return render_template("assignments.html", students=students, courses=courses, assignments=assignments)
 
 @app.route("/course/<int:course_id>")
 @login_required
