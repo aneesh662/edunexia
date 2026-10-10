@@ -10,6 +10,7 @@
 <button class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#nav"><span class="navbar-toggler-icon"></span></button>
 <div class="collapse navbar-collapse" id="nav"><div class="navbar-nav ms-auto align-items-lg-center gap-lg-2">
 {% if session.get('user_id') %}<a class="nav-link" href="{{ url_for('dashboard') }}">Dashboard</a>
+{% if session.get('role')=='student' %}<a class="nav-link" href="{{ url_for('student_profile') }}">My progress</a>{% endif %}
 {% if session.get('role')=='admin' %}<a class="nav-link" href="{{ url_for('manage_users') }}">Users</a><a class="nav-link" href="{{ url_for('new_course') }}">Create course</a><a class="nav-link" href="{{ url_for('manage_assignments') }}">Assign courses</a>{% endif %}
 <span class="nav-link small text-white-50">{{ session.get('name') }} · {{ session.get('role')|title }}</span>
 <form method="post" action="{{ url_for('logout') }}"><button class="btn btn-light btn-sm">Logout</button></form>

@@ -175,6 +175,35 @@ def dashboard():
           (session["user_id"],session["user_id"],session["user_id"])).fetchall()
         return render_template("student_dashboard.html", courses=courses)
 
+@app.route("/profile")
+@roles_required("student")
+def student_profile():
+    return render_student_profile(session["user_id"], admin_view=False)
+
+def render_student_profile(student_id, admin_view=True):
+    with db() as con:
+        student = con.execute("SELECT id,name,username,role,active,created_at FROM users WHERE id=? AND role='student'", (student_id,)).fetchone()
+        if not student:
+            abort(404)
+        courses = con.execute("""SELECT c.id,c.title,c.theme,
+            (SELECT COUNT(*) FROM lessons l WHERE l.course_id=c.id) AS lesson_count,
+            (SELECT COUNT(*) FROM lessons l JOIN lesson_progress p ON p.lesson_id=l.id
+                WHERE l.course_id=c.id AND p.student_id=? AND p.completed=1) AS completed_count,
+            (SELECT score FROM exam_results e WHERE e.course_id=c.id AND e.student_id=?) AS score,
+            (SELECT total FROM exam_results e WHERE e.course_id=c.id AND e.student_id=?) AS total,
+            (SELECT passed FROM exam_results e WHERE e.course_id=c.id AND e.student_id=?) AS passed,
+            (SELECT attempted_at FROM exam_results e WHERE e.course_id=c.id AND e.student_id=?) AS attempted_at
+            FROM enrollments en JOIN courses c ON c.id=en.course_id
+            WHERE en.student_id=? ORDER BY c.title""",
+            (student_id,student_id,student_id,student_id,student_id,student_id)).fetchall()
+    template = "student_profile.html" if admin_view else "my_profile.html"
+    return render_template(template, student=student, courses=courses)
+
+@app.route("/admin/students/<int:student_id>")
+@roles_required("admin")
+def admin_student_profile(student_id):
+    return render_student_profile(student_id, admin_view=True)
+
 @app.route("/admin/users", methods=["GET","POST"])
 @roles_required("admin")
 def manage_users():
@@ -345,6 +374,38 @@ def add_lesson(course_id):
     flash("Lesson added.", "success")
     return redirect(url_for("edit_course",course_id=course_id))
 
+@app.route("/admin/lessons/<int:lesson_id>/edit", methods=["GET", "POST"])
+@roles_required("admin")
+def edit_lesson(lesson_id):
+    with db() as con:
+        lesson = con.execute("SELECT * FROM lessons WHERE id=?", (lesson_id,)).fetchone()
+        if not lesson: abort(404)
+        if request.method == "POST":
+            title = request.form.get("title", "").strip()
+            content = request.form.get("content", "").strip()
+            upload = request.files.get("material")
+            if not title:
+                flash("Lesson title is required.", "danger")
+            else:
+                filename, file_type = lesson["file_name"], lesson["file_type"]
+                if upload and upload.filename:
+                    if not allowed_file(upload.filename):
+                        flash("Allowed lesson files: PDF, MP4, WEBM, MOV, M4V.", "danger")
+                        return render_template("lesson_edit.html", lesson=lesson)
+                    ext = upload.filename.rsplit(".", 1)[1].lower()
+                    new_name = f"{secrets.token_hex(16)}.{ext}"
+                    upload.save(os.path.join(UPLOAD_DIR, new_name))
+                    if filename:
+                        try: os.remove(os.path.join(UPLOAD_DIR, filename))
+                        except OSError: pass
+                    filename = new_name
+                    file_type = "video" if ext in {"mp4", "webm", "mov", "m4v"} else "pdf"
+                con.execute("UPDATE lessons SET title=?,content=?,file_name=?,file_type=? WHERE id=?",
+                            (title, content, filename, file_type, lesson_id))
+                flash("Lesson updated successfully.", "success")
+                return redirect(url_for("edit_course", course_id=lesson["course_id"]))
+    return render_template("lesson_edit.html", lesson=lesson)
+
 @app.route("/admin/lessons/<int:lesson_id>/delete", methods=["POST"])
 @roles_required("admin")
 def delete_lesson(lesson_id):
@@ -371,6 +432,24 @@ def add_question(course_id):
               VALUES(?,?,?,?,?,?,?)""",(course_id,*fields,correct))
         flash("Exam question added.", "success")
     return redirect(url_for("edit_course",course_id=course_id))
+
+@app.route("/admin/questions/<int:question_id>/edit", methods=["GET", "POST"])
+@roles_required("admin")
+def edit_question(question_id):
+    with db() as con:
+        q = con.execute("SELECT * FROM exam_questions WHERE id=?", (question_id,)).fetchone()
+        if not q: abort(404)
+        if request.method == "POST":
+            fields = [request.form.get(k, "").strip() for k in ("question", "option_a", "option_b", "option_c", "option_d")]
+            correct = request.form.get("correct_option", "")
+            if not all(fields) or correct not in ("a", "b", "c", "d"):
+                flash("Complete the question, all four options, and the correct answer.", "danger")
+            else:
+                con.execute("""UPDATE exam_questions SET question=?,option_a=?,option_b=?,option_c=?,option_d=?,correct_option=? WHERE id=?""",
+                            (*fields, correct, question_id))
+                flash("Exam question updated successfully.", "success")
+                return redirect(url_for("edit_course", course_id=q["course_id"]))
+    return render_template("question_edit.html", question=q)
 
 @app.route("/admin/questions/<int:question_id>/delete", methods=["POST"])
 @roles_required("admin")
@@ -436,7 +515,10 @@ def course_view(course_id):
           WHERE l.course_id=? ORDER BY l.position,l.id""",(session["user_id"],course_id)).fetchall()
         questions=con.execute("SELECT id,question,option_a,option_b,option_c,option_d FROM exam_questions WHERE course_id=? ORDER BY id",(course_id,)).fetchall()
         result=con.execute("SELECT * FROM exam_results WHERE student_id=? AND course_id=?",(session["user_id"],course_id)).fetchone() if session["role"]=="student" else None
-    return render_template("course_view.html",course=course,lessons=lessons,questions=questions,result=result)
+        completed_count = sum(1 for lesson in lessons if lesson["completed"])
+        exam_unlocked = bool(lessons) and completed_count == len(lessons)
+    return render_template("course_view.html",course=course,lessons=lessons,questions=questions,result=result,
+                           completed_count=completed_count,exam_unlocked=exam_unlocked)
 
 @app.route("/lesson/<int:lesson_id>/file")
 @login_required
@@ -472,6 +554,12 @@ def complete_lesson(lesson_id):
 def submit_exam(course_id):
     with db() as con:
         if not user_can_access_course(con,course_id): abort(403)
+        total_lessons = con.execute("SELECT COUNT(*) n FROM lessons WHERE course_id=?", (course_id,)).fetchone()["n"]
+        completed_lessons = con.execute("""SELECT COUNT(*) n FROM lessons l JOIN lesson_progress p ON p.lesson_id=l.id
+            WHERE l.course_id=? AND p.student_id=? AND p.completed=1""", (course_id, session["user_id"])).fetchone()["n"]
+        if total_lessons == 0 or completed_lessons < total_lessons:
+            flash("Complete every lesson before taking the exam.", "warning")
+            return redirect(url_for("course_view", course_id=course_id))
         questions=con.execute("SELECT * FROM exam_questions WHERE course_id=? ORDER BY id",(course_id,)).fetchall()
         if not questions:
             flash("This course does not have exam questions yet.", "warning")
