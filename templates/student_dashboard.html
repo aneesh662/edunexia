@@ -2,7 +2,7 @@
 <p class="eyebrow mb-1">YOUR LEARNING SPACE</p><h1 class="fw-bold">Welcome, {{ session.get('name') }}</h1>
 <p class="text-secondary mb-4">Only courses assigned to you by the administrator appear here. You can view lessons, complete learning activities and take exams.</p>
 <div class="row g-4">{% for c in courses %}
-<div class="col-md-6 col-xl-4"><div class="course-card p-4">
+<div class="col-md-6 col-xl-4"><div class="course-card p-4 theme-{{ c.theme or 'ocean' }}">
 <span class="tag">{{ c.lesson_count }} lessons</span><h3 class="h5 fw-bold mt-3">{{ c.title }}</h3><p class="text-secondary">{{ c.description }}</p>
 <div class="progress mb-2"><div class="progress-bar" style="width:{{ (100*c.completed_count/c.lesson_count)|round|int if c.lesson_count else 0 }}%"></div></div>
 <div class="small text-secondary mb-3">{{ c.completed_count }}/{{ c.lesson_count }} lessons complete</div>

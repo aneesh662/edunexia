@@ -33,7 +33,7 @@ def init_db():
           active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS courses(
           id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
-          instructor_id INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          instructor_id INTEGER, theme TEXT NOT NULL DEFAULT 'ocean', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY(instructor_id) REFERENCES users(id) ON DELETE SET NULL);
         CREATE TABLE IF NOT EXISTS lessons(
           id INTEGER PRIMARY KEY AUTOINCREMENT, course_id INTEGER NOT NULL, title TEXT NOT NULL,
@@ -60,10 +60,14 @@ def init_db():
           FOREIGN KEY(student_id) REFERENCES users(id) ON DELETE CASCADE,
           FOREIGN KEY(lesson_id) REFERENCES lessons(id) ON DELETE CASCADE);
         """)
+        # Lightweight migrations for databases created by earlier project versions.
+        course_columns = {row['name'] for row in con.execute("PRAGMA table_info(courses)").fetchall()}
+        if 'theme' not in course_columns:
+            con.execute("ALTER TABLE courses ADD COLUMN theme TEXT NOT NULL DEFAULT 'ocean'")
         admin = con.execute("SELECT id FROM users WHERE username='admin'").fetchone()
         if not admin:
             con.execute("INSERT INTO users(name,username,password_hash,role) VALUES(?,?,?,?)",
-                        ("Platform Admin", "admin", generate_password_hash(os.environ.get("INITIAL_ADMIN_PASSWORD", "ChangeMe123!")), "admin"))
+                        ("Platform Admin", "admin", generate_password_hash(os.environ.get("INITIAL_ADMIN_PASSWORD") or "admin123"), "admin"))
 
 def login_required(fn):
     @wraps(fn)
@@ -179,8 +183,8 @@ def manage_users():
         username=request.form.get("username","").strip().lower()
         password=request.form.get("password","")
         role=request.form.get("role","")
-        if not name or not username or len(password)<8 or role not in ("student","instructor"):
-            flash("Enter all fields. Password must be at least 8 characters; role must be student or instructor.", "danger")
+        if not name or not username or len(password)<8 or role not in ("student","instructor","admin"):
+            flash("Enter all fields. Password must be at least 8 characters; choose a valid role.", "danger")
         else:
             try:
                 with db() as con:
@@ -194,12 +198,76 @@ def manage_users():
         users=con.execute("SELECT id,name,username,role,active,created_at FROM users ORDER BY role,name").fetchall()
     return render_template("users.html", users=users)
 
+@app.route("/admin/users/<int:user_id>/edit", methods=["GET","POST"])
+@roles_required("admin")
+def edit_user(user_id):
+    with db() as con:
+        user=con.execute("SELECT id,name,username,role,active FROM users WHERE id=?", (user_id,)).fetchone()
+        if not user: abort(404)
+        if request.method == "POST":
+            name=request.form.get("name","").strip()
+            username=request.form.get("username","").strip().lower()
+            role=request.form.get("role","")
+            password=request.form.get("password","")
+            active=1 if request.form.get("active")=="1" else 0
+            if not name or not username or role not in ("admin","instructor","student"):
+                flash("Name, username and a valid role are required.", "danger")
+            elif user_id == session.get("user_id") and (role != "admin" or not active):
+                flash("You cannot remove administrator access or deactivate your own account while logged in.", "danger")
+            elif password and len(password)<8:
+                flash("New password must be at least 8 characters.", "danger")
+            elif user["role"] == "admin" and user["active"] and (role != "admin" or not active) and con.execute("SELECT COUNT(*) n FROM users WHERE role='admin' AND active=1").fetchone()["n"] <= 1:
+                flash("The last active administrator cannot be demoted or deactivated.", "danger")
+            else:
+                try:
+                    if password:
+                        con.execute("UPDATE users SET name=?,username=?,role=?,active=?,password_hash=? WHERE id=?",
+                                    (name,username,role,active,generate_password_hash(password),user_id))
+                    else:
+                        con.execute("UPDATE users SET name=?,username=?,role=?,active=? WHERE id=?",
+                                    (name,username,role,active,user_id))
+                    if user_id == session.get("user_id"):
+                        session["name"] = name
+                        session["username"] = username
+                    flash("Account updated successfully.", "success")
+                    return redirect(url_for("manage_users"))
+                except sqlite3.IntegrityError:
+                    flash("That username is already in use.", "danger")
+        return render_template("user_edit.html", user=user)
+
+@app.route("/admin/users/<int:user_id>/delete", methods=["POST"])
+@roles_required("admin")
+def delete_user(user_id):
+    if user_id == session.get("user_id"):
+        flash("You cannot delete the account you are currently using.", "danger")
+        return redirect(url_for("manage_users"))
+    with db() as con:
+        user=con.execute("SELECT id,role FROM users WHERE id=?", (user_id,)).fetchone()
+        if not user: abort(404)
+        if user["role"] == "admin":
+            admin_count=con.execute("SELECT COUNT(*) n FROM users WHERE role='admin' AND active=1").fetchone()["n"]
+            target_active=con.execute("SELECT active FROM users WHERE id=?",(user_id,)).fetchone()["active"]
+            if target_active and admin_count <= 1:
+                flash("The last active administrator cannot be deleted.", "danger")
+                return redirect(url_for("manage_users"))
+        con.execute("DELETE FROM users WHERE id=?", (user_id,))
+    flash("Account deleted.", "success")
+    return redirect(url_for("manage_users"))
+
 @app.route("/admin/users/<int:user_id>/toggle", methods=["POST"])
 @roles_required("admin")
 def toggle_user(user_id):
     with db() as con:
         user=con.execute("SELECT id,role,active FROM users WHERE id=?", (user_id,)).fetchone()
-        if not user or user["role"]=="admin": abort(404)
+        if not user: abort(404)
+        if user_id == session.get("user_id"):
+            flash("You cannot deactivate your own account.", "danger")
+            return redirect(url_for("manage_users"))
+        if user["role"]=="admin" and user["active"]:
+            count=con.execute("SELECT COUNT(*) n FROM users WHERE role='admin' AND active=1").fetchone()["n"]
+            if count <= 1:
+                flash("The last active administrator cannot be deactivated.", "danger")
+                return redirect(url_for("manage_users"))
         con.execute("UPDATE users SET active=? WHERE id=?", (0 if user["active"] else 1,user_id))
     flash("Account status updated.", "success")
     return redirect(url_for("manage_users"))
@@ -213,11 +281,13 @@ def new_course():
         title=request.form.get("title","").strip()
         description=request.form.get("description","").strip()
         instructor_id=request.form.get("instructor_id") or None
+        theme=request.form.get("theme","ocean")
+        if theme not in ("ocean","violet","forest","sunset","midnight"): theme="ocean"
         if not title:
             flash("Course title is required.", "danger")
             return redirect(url_for("new_course"))
         with db() as con:
-            con.execute("INSERT INTO courses(title,description,instructor_id) VALUES(?,?,?)",(title,description,instructor_id))
+            con.execute("INSERT INTO courses(title,description,instructor_id,theme) VALUES(?,?,?,?)",(title,description,instructor_id,theme))
             course_id=con.execute("SELECT last_insert_rowid()").fetchone()[0]
         flash("Course created. Add lessons and exam questions next.", "success")
         return redirect(url_for("edit_course", course_id=course_id))
@@ -236,9 +306,14 @@ def edit_course(course_id):
         title=request.form.get("title","").strip()
         description=request.form.get("description","").strip()
         instructor_id=request.form.get("instructor_id") or None
+        theme=request.form.get("theme","ocean")
+        if theme not in ("ocean","violet","forest","sunset","midnight"): theme="ocean"
+        if not title:
+            flash("Course title is required.", "danger")
+            return redirect(url_for("edit_course", course_id=course_id))
         with db() as con:
-            con.execute("UPDATE courses SET title=?,description=?,instructor_id=? WHERE id=?",
-                        (title,description,instructor_id,course_id))
+            con.execute("UPDATE courses SET title=?,description=?,instructor_id=?,theme=? WHERE id=?",
+                        (title,description,instructor_id,theme,course_id))
         flash("Course details updated.", "success")
         return redirect(url_for("edit_course", course_id=course_id))
     return render_template("course_edit.html", course=course, instructors=instructors, lessons=lessons, questions=questions)

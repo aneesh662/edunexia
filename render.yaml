@@ -11,4 +11,4 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: INITIAL_ADMIN_PASSWORD
-        sync: false
+        value: admin123
